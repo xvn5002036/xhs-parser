@@ -1,4 +1,4 @@
-# 這是 index.py 的完整內容
+# 這是 index.py 的最終智慧版程式碼
 from http.server import BaseHTTPRequestHandler
 import json
 import requests
@@ -19,7 +19,7 @@ class handler(BaseHTTPRequestHandler):
         if not match:
             self._send_response({'error': 'No URL found in the provided text'}, status=400)
             return
-
+        
         xhs_url = match.group(0)
 
         try:
@@ -35,48 +35,48 @@ class handler(BaseHTTPRequestHandler):
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
-            script_tag = soup.find('script', string=lambda t: t and 'window.__INITIAL_STATE__' in t)
             
-            if not script_tag:
-                raise ValueError("Could not find initial state script tag.")
-
-            json_str = script_tag.string.split('window.__INITIAL_STATE__=')[1].split(';window.__INITIAL_PROPS__=')[0]
-            data = json.loads(json_str)
-
-            note_id = list(data['note']['noteDetailMap'].keys())[0]
-            note_data = data['note']['noteDetailMap'][note_id]
+            # --- 全新的智慧邏輯 ---
+            download_urls = []
             
-            media_list = []
-            
-            # --- 全新的邏輯 ---
-            # 優先檢查是否存在「圖片+影片」的組合
+            # 優先檢查「圖片+影片」的組合
             live_photo_combo = soup.select_one('div.live-photo-contain')
             if live_photo_combo:
                 img_tag = live_photo_combo.select_one('img')
                 video_tag = live_photo_combo.select_one('video')
                 if img_tag and video_tag:
-                    # 發現組合！回傳一個新的類型 "live_photo_combo"
-                    media_list.append({
-                        "type": "live_photo_combo",
-                        "image_url": img_tag.get('src', '').split('?')[0],
-                        "video_url": video_tag.get('src', '').split('?')[0]
-                    })
-
-            # 如果不是組合，才走舊的邏輯
-            elif note_data['type'] == 'video':
-                duration = note_data['video'].get('duration', 99999)
-                video_url = note_data['video']['media']['stream']['h264'][0]['masterUrl']
-                
-                if duration < 4000:
-                    media_list.append({"url": video_url, "type": "live_photo"})
-                else:
-                    media_list.append({"url": video_url, "type": "video"})
+                    # 直接把兩個網址都加到下載列表
+                    download_urls.append(img_tag.get('src', '').split('?')[0])
+                    download_urls.append(video_tag.get('src', '').split('?')[0])
             else:
-                for image in note_data['imageList']:
-                    image_url = image['info_list'][0]['url_default'].split('?')[0]
-                    media_list.append({"url": image_url, "type": "image"})
+                # 如果不是組合，才解析 JSON
+                script_tag = soup.find('script', string=lambda t: t and 'window.__INITIAL_STATE__' in t)
+                if not script_tag:
+                    raise ValueError("Could not find initial state script tag.")
+
+                json_str = script_tag.string.split('window.__INITIAL_STATE__=')[1].split(';window.__INITIAL_PROPS__=')[0]
+                data = json.loads(json_str)
+
+                note_id = list(data['note']['noteDetailMap'].keys())[0]
+                note_data = data['note']['noteDetailMap'][note_id]
+                
+                if note_data['type'] == 'video':
+                    video_url = note_data['video']['media']['stream']['h24'][0]['masterUrl']
+                    download_urls.append(video_url)
+                else:
+                    for image in note_data['imageList']:
+                        image_url = image['info_list'][0]['url_default'].split('?')[0]
+                        download_urls.append(image_url)
             
-            self._send_response({"media": media_list})
+            # 回傳最終的、超級簡單的下載列表
+            self._send_response({"urls_to_download": download_urls})
 
         except Exception as e:
             self._send_response({'error': str(e), 'processed_url': xhs_url}, status=500)
+
+    def _send_response(self, message, status=200):
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(message).encode('utf-8'))
+
