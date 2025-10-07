@@ -8,25 +8,24 @@ import re
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         query_params = parse_qs(urlparse(self.path).query)
-        text_input = query_params.get('text', [None])[0] 
+        text_input = query_params.get('text', [None])[0]
 
         if not text_input:
             self._send_response({'error': 'text parameter is missing'}, status=400)
             return
 
         match = re.search(r'https?://[a-zA-Z0-9./?=&_~%-]+', text_input)
-
         if not match:
             self._send_response({'error': 'No URL found in the provided text'}, status=400)
             return
-
+        
         xhs_url = match.group(0)
 
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
             }
-
+            
             if 'xhslink.com' in xhs_url:
                 head_response = requests.head(xhs_url, headers=headers, allow_redirects=True, timeout=10)
                 xhs_url = head_response.url
@@ -36,7 +35,7 @@ class handler(BaseHTTPRequestHandler):
 
             soup = BeautifulSoup(response.text, 'html.parser')
             script_tag = soup.find('script', string=lambda t: t and 'window.__INITIAL_STATE__' in t)
-
+            
             if not script_tag:
                 raise ValueError("Could not find initial state script tag.")
 
@@ -45,17 +44,30 @@ class handler(BaseHTTPRequestHandler):
 
             note_id = list(data['note']['noteDetailMap'].keys())[0]
             note_data = data['note']['noteDetailMap'][note_id]
-
-            media_urls = []
+            
+            # --- 邏輯更新 ---
+            media_list = []
             if note_data['type'] == 'video':
-                video_key = note_data['video']['media']['stream']['h264'][0]['masterUrl']
-                media_urls.append(video_key)
+                # 判斷影片時長，小紅書的時長單位是毫秒 (ms)
+                # 一般 Live Photo 時長在 3000ms (3秒) 左右，我們放寬到 4000ms
+                duration = note_data['video'].get('duration', 99999) # 使用 .get 避免錯誤
+                video_url = note_data['video']['media']['stream']['h264'][0]['masterUrl']
+                
+                if duration < 4000:
+                    # 標記為 live_photo
+                    media_list.append({"url": video_url, "type": "live_photo"})
+                else:
+                    # 標記為 video
+                    media_list.append({"url": video_url, "type": "video"})
             else:
+                # 圖片筆記
                 for image in note_data['imageList']:
-                    url = image['info_list'][0]['url_default'].split('?')[0]
-                    media_urls.append(url)
-
-            self._send_response({'media_urls': media_urls, 'original_url': xhs_url})
+                    image_url = image['info_list'][0]['url_default'].split('?')[0]
+                    # 標記為 image
+                    media_list.append({"url": image_url, "type": "image"})
+            
+            # 回傳新的資料結構
+            self._send_response({"media": media_list})
 
         except Exception as e:
             self._send_response({'error': str(e), 'processed_url': xhs_url}, status=500)
